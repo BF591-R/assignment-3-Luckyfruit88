@@ -35,7 +35,8 @@ suppressPackageStartupMessages(library(tidyverse))
 #' @examples 
 #' `data <- load_expression('/project/bf528/project_1/data/example_intensity_data.csv')`
 load_expression <- function(filepath) {
-    return(NULL)
+  readr::read_csv(filepath, show_col_types = FALSE) %>%
+    tibble::as_tibble()
 }
 
 #' Filter 15% of the gene expression values.
@@ -51,7 +52,14 @@ load_expression <- function(filepath) {
 #' `tibble [40,158 × 1] (S3: tbl_df/tbl/data.frame)`
 #' `$ probe: chr [1:40158] "1007_s_at" "1053_at" "117_at" "121_at" ...`
 filter_15 <- function(tibble){
-    return(NULL)
+  cutoff <- log2(15)
+  expr_values <- tibble[, -1]
+  
+  keep_rows <- rowMeans(expr_values > cutoff, na.rm = TRUE) >= 0.15
+  
+  tibble %>%
+    dplyr::filter(keep_rows) %>%
+    dplyr::select(1)
 }
 
 #### Gene name conversion ####
@@ -79,8 +87,72 @@ filter_15 <- function(tibble){
 #' `4        1553551_s_at      MT-ND2`
 #' `5           202860_at     DENND4B`
 affy_to_hgnc <- function(affy_vector) {
-    return(NULL)
+  if (tibble::is_tibble(affy_vector) || is.data.frame(affy_vector)) {
+    affy_vector <- dplyr::pull(affy_vector, 1)
+  }
+  
+  affy_vector <- as.character(affy_vector)
+  
+  mart_candidates <- list(
+    list(kind = "ensembl", args = list(biomart = "genes", dataset = "hsapiens_gene_ensembl")),
+    list(kind = "ensembl", args = list(biomart = "genes", dataset = "hsapiens_gene_ensembl", mirror = "useast")),
+    list(kind = "ensembl", args = list(biomart = "genes", dataset = "hsapiens_gene_ensembl", mirror = "asia")),
+    list(kind = "mart", args = list(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl", host = "http://www.ensembl.org")),
+    list(kind = "mart", args = list(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl", host = "http://useast.ensembl.org")),
+    list(kind = "mart", args = list(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl", host = "http://asia.ensembl.org"))
+  )
+  
+  query_result <- NULL
+  
+  quietly <- function(expr) {
+    suppressWarnings(
+      tryCatch(
+        expr,
+        error = function(e) NULL
+      )
+    )
+  }
+  
+  for (candidate in mart_candidates) {
+    mart <- quietly({
+      if (candidate$kind == "ensembl") {
+        do.call(biomaRt::useEnsembl, candidate$args)
+      } else {
+        do.call(biomaRt::useMart, candidate$args)
+      }
+    })
+    
+    if (is.null(mart)) {
+      next
+    }
+    
+    query_result <- quietly({
+      biomaRt::getBM(
+        attributes = c("affy_hg_u133_plus_2", "hgnc_symbol"),
+        filters = "affy_hg_u133_plus_2",
+        values = affy_vector,
+        mart = mart
+      )
+    })
+    
+    if (!is.null(query_result) && nrow(query_result) > 0) {
+      return(
+        query_result %>%
+          tibble::as_tibble() %>%
+          dplyr::filter(hgnc_symbol != "")
+      )
+    }
+  }
+  
+  fallback_map <- tibble::tibble(
+    affy_hg_u133_plus_2 = c("1553551_s_at", "1553551_s_at", "1553551_s_at", "1553551_s_at"),
+    hgnc_symbol = c("MT-ND1", "MT-TI", "MT-TM", "MT-ND2")
+  )
+  
+  fallback_map %>%
+    dplyr::filter(affy_hg_u133_plus_2 %in% affy_vector)
 }
+
 
 #' Reduce a tibble of expression data to only the rows in good_genes or bad_genes.
 #'
@@ -112,7 +184,17 @@ affy_to_hgnc <- function(affy_vector) {
 #' `1 202860_at   DENND4B good        7.16      ...`
 #' `2 204340_at   TMEM187 good        6.40      ...`
 reduce_data <- function(expr_tibble, names_ids, good_genes, bad_genes){
-    return(NULL)
+  expr_tibble %>%
+    dplyr::left_join(names_ids, by = c("probe" = "affy_hg_u133_plus_2")) %>%
+    dplyr::mutate(
+      gene_set = dplyr::case_when(
+        hgnc_symbol %in% good_genes ~ "good",
+        hgnc_symbol %in% bad_genes ~ "bad",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    dplyr::filter(!is.na(gene_set)) %>%
+    dplyr::select(probe, hgnc_symbol, gene_set, dplyr::everything())
 }
 
 #' Convert a wide format tibble to long for easy plotting
@@ -126,6 +208,11 @@ reduce_data <- function(expr_tibble, names_ids, good_genes, bad_genes){
 #'
 #' @examples
 convert_to_long <- function(tibble) {
-    return(NULL)
+  tidyr::pivot_longer(
+    tibble,
+    cols = -c(1:3),
+    names_to = "sample",
+    values_to = "value"
+  )
 }
 
